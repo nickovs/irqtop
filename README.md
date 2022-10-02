@@ -77,7 +77,7 @@ of the CPUs and a blank entry to revert to the command line option settings.
 
 `irqtop` was written by Nicko van Someren. It was inspired by an earlier
 program written in Perl called [itop](https://github.com/kargig/itop) written
-by [George Kargiotakis](https://github.com/kargig). I find that Pearl is
+by [George Kargiotakis](https://github.com/kargig). I find that Perl is
 largely incomprehensible, and in general it's a good idea to be able to
 understand your system tools, so I built a new version in Python instead.
 
