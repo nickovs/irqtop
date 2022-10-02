@@ -8,7 +8,7 @@ interrupts from the available interrupt sources in a Linux system.
 
 `irqtop` is written in Python and requires Python 3.7 or later, but
 has no other dependencies. It is distributed as a single Python file.
-Install it by copying it to some directory on your `PATH` and making
+Install it by copying it to some directory on your `PATH` and
 setting the executable bit, e.g.:
 ```shell
 cp irqtop.py /usr/local/bin/irqtop
