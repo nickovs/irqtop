@@ -1,0 +1,6 @@
+# Files and directories to ignore
+*~
+
+.idea
+venv
+.DS_Store
