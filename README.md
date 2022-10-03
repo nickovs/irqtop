@@ -45,8 +45,8 @@ expense of potentially not displaying some CPUs' interrupt counts.
 
   `--cpus CPUS`, `-c CPUS`: Only display interrupt counts for the listed CPUs.
   
-  `--sort ORDER`, `-s ORDER`: Sort by (t)otal count, (n)ame or (d)evice.
-  Use the upper case letter to reverse the order.
+  `--sort ORDER`, `-s ORDER`: Sort by `t` (total count), `n` (name) or `d`
+  (device details). Use the upper case letter to reverse the order.
 
   `--interval N`, `-i N`: Sample every N seconds (may be a floating point value).
 
@@ -57,16 +57,19 @@ expense of potentially not displaying some CPUs' interrupt counts.
 It is often useful to change the options and filtering of the display contents
 while `irqtop` is running. The following keys can be used to control the
 program after it has started:
-* `f` followed by a filter regex to update the filtering. A blank entry removes
+* `f` followed by a filter regex updates the filtering. A blank entry removes
 any existing filter.
+* `s` followed by a sort key updates the sort order. As well as allowing `t`, `n`, `d`
+and their uppercase versions as supported by the `--sort` command line option, a sort
+key of `=` pins the order to the current display order.
 * `t` toggles the display of the total interrupt count.
-* `d` toggels the display of the device details. Use `D` to include the details
+* `d` toggles the display of the device details. Use `D` to include the details
 if there is room but hide them otherwise.
-* `c` followed by a list of CPU numbers or ranges to change the set of CPUs for
+* `c` followed by a list of CPU numbers or ranges changes the set of CPUs for
 which the count is displayed. Use '+' to display all CPUs, '-' to display none 
 of the CPUs and a blank entry to revert to the command line option settings.
-* `i` followed by a number (in seconds) to set the refresh interval.
-* `q` to quit the program.
+* `i` followed by a number (in seconds) sets the refresh interval.
+* `q` quits the program.
 
 ## License
 
@@ -76,10 +79,8 @@ of the CPUs and a blank entry to revert to the command line option settings.
 ## Credits
 
 `irqtop` was written by Nicko van Someren. It was inspired by an earlier
-program written in Perl called [itop](https://github.com/kargig/itop) written
+program written in Perl called [itop](https://github.com/kargig/itop)
 by [George Kargiotakis](https://github.com/kargig). I find that Perl is
 largely incomprehensible, and in general it's a good idea to be able to
 understand your system tools, so I built a new version in Python instead.
-
-
 

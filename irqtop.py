@@ -17,8 +17,6 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-
-
 import argparse
 import os
 import re
@@ -334,10 +332,16 @@ def main():
                 elif key in ['s', 'S']:
                     # Change the sort order
                     with unbuffered.suspend():
-                        keys = ''.join(_sort_keys.keys())
+                        keys = ''.join(_sort_keys.keys()) + '='
                         new_sort_key = input(f"Sort key ({keys}):")
-                        if new_sort_key in _sort_keys:
-                            sorter, sort_reverse = _sort_keys[key]
+                        if new_sort_key == '=':
+                            frozen_order = dict((entry.name, i) for i, entry in enumerate(filtered))
+
+                            def frozen_sorter_key(entry):
+                                return frozen_order[entry.name] if entry.name in frozen_order else len(frozen_order)
+                            sorter, sort_reverse = frozen_sorter_key, False
+                        elif new_sort_key in _sort_keys:
+                            sorter, sort_reverse = _sort_keys[new_sort_key]
                         else:
                             flash_message(f"Sort key must be one of: {keys}")
                 elif key in ['f', 'F']:
