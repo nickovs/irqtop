@@ -198,10 +198,14 @@ def main():
                         type=float, help="Sample every N seconds")
     parser.add_argument("--count", "-n", metavar="N", default=0, type=positive_int,
                         help="Update the results N times and then exit")
-    parser.add_argument("--total", "-t", action=argparse.BooleanOptionalAction,
-                        help="Only display the total count, not per CPU. Use --no-total to hide the total")
-    parser.add_argument("--details", "--device", "-d", action=argparse.BooleanOptionalAction,
-                        help="Force display of device details. Use --no-device to hide details")
+    parser.add_argument("--total", "-t", action='store_true',
+                        default=None, help="Only display the total count, not per CPU")
+    parser.add_argument("--no-total", dest='total', action='store_false',
+                        help="Hide the total IRQ count")
+    parser.add_argument("--details", "--device", "-d", action='store_true',
+                        default=None, help="Force display of device details")
+    parser.add_argument("--no-details", "--no-device", dest="details", action="store_false",
+                        help="Hide the device details")
     parser.add_argument("--cpus", "-c", metavar="CPUS",
                         help="Display just listed CPUs (e.g. 0,1,5-7) and total")
     parser.add_argument("--sort", "-s", metavar="ORDER", default='t',
