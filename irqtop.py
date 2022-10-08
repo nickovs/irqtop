@@ -17,16 +17,24 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import argparse
+from argparse import ArgumentParser, ArgumentTypeError
 import os
 import re
-import dataclasses
 import select
 import sys
 import time
 import termios
 import fcntl
-from typing import List, Dict
+import types
+from dataclasses import dataclass
+from typing import List, Dict, Union
+
+
+# Deal with Python 3.9 and earlier
+if "NoneType" in types.__dict__:
+    NoneType = types.NoneType
+else:
+    NoneType = type(None)
 
 
 class UnbufferedTerminal:
@@ -77,12 +85,19 @@ class UnbufferedTerminal:
         return UnbufferedTerminal(self._in_file, not self._inverted)
 
 
-@dataclasses.dataclass
+@dataclass
 class IRQCount:
     name: str
-    total: int
-    counts: List[int]
+    total: Union[int, str]
+    counts: List[Union[int, str]]
     comment: str
+
+
+@dataclass
+class DisplayColumns:
+    total: Union[bool, NoneType]
+    details: Union[bool, NoneType]
+    cpus: Union[List[int], NoneType]
 
 
 class IRQTop:
@@ -96,6 +111,7 @@ class IRQTop:
         self._cpu_count = -1
         self._last_readings = {}
         self._last_deltas = {}
+        self._read_irq_data()
 
     def _irq_delta(self, new_value: IRQCount):
         if new_value.name in self._last_readings:
@@ -107,7 +123,7 @@ class IRQTop:
             return new_value
 
     @staticmethod
-    def parse_line(line, last_cpu_col):
+    def _parse_line(line, last_cpu_col):
         parts = line[:last_cpu_col].split()
         irq_id = parts[0].strip(":")
         try:
@@ -127,7 +143,7 @@ class IRQTop:
         last_cpu_col = len(cpu_line)
         self._cpu_count = len(cpu_line.split())
 
-        raw_readings = [self.parse_line(line, last_cpu_col) for line in lines[1:]]
+        raw_readings = [self._parse_line(line, last_cpu_col) for line in lines[1:]]
         mapped_readings = dict((i.name, i) for i in raw_readings)
         delta_readings = dict((name, self._irq_delta(value)) for name, value in mapped_readings.items())
 
@@ -143,20 +159,8 @@ class IRQTop:
         return self._cpu_count
 
 
-def _cpu_list_split(cpus):
-    parts = cpus.split(",")
-    r = []
-    for part in parts:
-        part = part.strip()
-        if "-" in part:
-            start, end = map(int, part.split("-", 1))
-            r.extend(range(start, end+1))
-        else:
-            r.append(int(part))
-    return r
-
-
 def _lax_max(items):
+    """Like max() but returns 0 for an empty list"""
     items = list(items)
     return max(items) if items else 0
 
@@ -178,11 +182,45 @@ _sort_keys = {
 }
 
 
-def positive_int(arg_str):
-    value = int(arg_str)
-    if value < 0:
-        raise argparse.ArgumentTypeError('value must be positive')
-    return value
+def _positive_number_arg(arg_str, num_type):
+    try:
+        value = num_type(arg_str)
+        if value < 0:
+            raise ArgumentTypeError('value must be positive')
+        return value
+    except ValueError:
+        raise ArgumentTypeError('value must be a positive ' + num_type.__name__)
+
+
+def positive_int_arg(arg_str):
+    return _positive_number_arg(arg_str, int)
+
+
+def positive_float_arg(arg_str):
+    return _positive_number_arg(arg_str, float)
+
+
+def cpu_list_arg(cpus):
+    parts = cpus.split(",")
+    r = []
+    try:
+        for part in parts:
+            part = part.strip()
+            if "-" in part:
+                start, end = map(int, part.split("-", 1))
+                r.extend(range(start, end+1))
+            else:
+                r.append(int(part))
+        return r
+    except ValueError:
+        raise ArgumentTypeError('value must be a list of integers or integer ranges')
+
+
+def regex_arg(pattern):
+    try:
+        return re.compile(pattern)
+    except re.error:
+        raise ArgumentTypeError('value must be a regular expression')
 
 
 def flash_message(m):
@@ -190,13 +228,67 @@ def flash_message(m):
     time.sleep(0.5)
 
 
+class LineLayout:
+    def __init__(self, cpu_count, display, filtered, tty_width):
+        """Create a line layout based on the display settings and current values"""
+        self.display = display
+        self.use_cpus = display.cpus if display.cpus is not None else list(range(cpu_count))
+        self.name_width = max(len(i.name) for i in filtered)
+        max_total = max(i.total for i in filtered)
+        max_count = _lax_max(c for i in filtered
+                             for n, c in enumerate(i.counts) if n in self.use_cpus)
+        self.total_width = max(len(str(max_total)), 5)
+        self.count_width = max(len(str(max_count)), 5)
+        reserve_comment = min(max(len(i.comment) for i in filtered), tty_width // 3)
+        if tty_width != -1:
+            left_width = self.name_width + 1
+            if display.total:
+                left_width += self.total_width + 1
+
+            if display.details is True:
+                # If we are forcing the display of details, reserve a third of the width
+                left_width += reserve_comment
+
+            if left_width > tty_width:
+                self.use_cpus = []
+            else:
+                cpu_room = (tty_width - left_width) // (self.count_width + 1)
+                self.use_cpus = self.use_cpus[:cpu_room]
+                left_width += len(self.use_cpus) * (self.count_width + 1)
+
+            if display.details is True:
+                left_width -= reserve_comment
+
+            self.comment_width = (tty_width - left_width) - 1
+            if display.details is False or self.comment_width < 6:
+                self.comment_width = 0
+        else:
+            self.comment_width = 255
+
+    @property
+    def has_details(self):
+        return self.comment_width != 0
+
+    def __call__(self, row: IRQCount):
+        cpu_counts = [row.counts[cpu_no] if cpu_no < len(row.counts) else "-"
+                      for i, cpu_no in enumerate(self.use_cpus)
+                      if i < len(row.counts)]
+        line = row.name.rjust(self.name_width)
+        if self.display.total:
+            line += " " + str(row.total).rjust(self.total_width)
+        if self.use_cpus:
+            line += " " + " ".join(str(c).rjust(self.count_width) for c in cpu_counts)
+        line += " " + row.comment[:self.comment_width]
+        return line
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Display the top sources of interrupts')
+    parser = ArgumentParser(description='Display the top sources of interrupts')
     parser.add_argument("--filter", "-f", metavar="REGEX", default=None,
-                        type=str, help="Only display IRQ sources matching regex")
+                        type=regex_arg, help="Only display IRQ sources matching regex")
     parser.add_argument("--interval", "-i", metavar="N", default=1.0,
-                        type=float, help="Sample every N seconds")
-    parser.add_argument("--count", "-n", metavar="N", default=0, type=positive_int,
+                        type=positive_float_arg, help="Sample every N seconds")
+    parser.add_argument("--count", "-n", metavar="N", default=0, type=positive_int_arg,
                         help="Update the results N times and then exit")
     parser.add_argument("--total", "-t", action='store_true',
                         default=None, help="Only display the total count, not per CPU")
@@ -206,14 +298,14 @@ def main():
                         default=None, help="Force display of device details")
     parser.add_argument("--no-details", "--no-device", dest="details", action="store_false",
                         help="Hide the device details")
-    parser.add_argument("--cpus", "-c", metavar="CPUS",
+    parser.add_argument("--cpus", "-c", metavar="CPUS", type=cpu_list_arg,
                         help="Display just listed CPUs (e.g. 0,1,5-7) and total")
     parser.add_argument("--sort", "-s", metavar="ORDER", default='t',
                         help="Sort by (t)otal count, (n)ame or (d)evice. Upper case to reverse order")
 
     args = parser.parse_args()
 
-    filter_re = re.compile(args.filter) if args.filter is not None else None
+    filter_re = args.filter
 
     sorter, sort_reverse = None, False
     if args.sort in _sort_keys:
@@ -221,47 +313,28 @@ def main():
     else:
         parser.exit(1, f"Unknown sort key: {args.sort}")
 
-    cpus = None
-    just_total = args.total is True
-
-    if args.cpus is not None:
-        cpus = _cpu_list_split(args.cpus)
-
-    if just_total:
-        cpus = []
-
-    show_total = not(args.total is False)
-
-    if sys.stdout.isatty():
-        tty_width, tty_height = os.get_terminal_size()
-        tty_height = max(tty_height, 3)
-    else:
-        tty_width, tty_height = -1, -1
-
+    display = DisplayColumns(total=args.total, cpus=[] if args.total is True else args.cpus, details=args.details)
     tracker = IRQTop()
+    header_line = IRQCount("", "TOTAL", [f"CPU{i}" for i in range(tracker.cpu_count)], "")
 
-    running = True
-
-    details = args.details
+    tty_width, tty_height = -1, -1
     interval = args.interval
-
     count = args.count
     iteration = 0
 
+    running = True
     with UnbufferedTerminal() as unbuffered:
         while running and (count == 0 or iteration < count):
             iteration += 1
             t = time.time()
             deltas = tracker.poll()
 
-            use_cpus = cpus if cpus is not None else list(range(tracker.cpu_count))
+            filtered = [value
+                        for name, value in deltas.items()
+                        if filter_re is None or filter_re.search(name + value.comment)]
 
-            if filter_re is not None:
-                filtered = [value for name, value in deltas.items() if filter_re.search(name + value.comment)]
-                if not filtered:
-                    filtered = [IRQCount("No IRQs matching filter", 0, [], "")]
-            else:
-                filtered = list(deltas.values())
+            if not filtered:
+                filtered = [IRQCount("No IRQs matching filter", 0, [], "")]
 
             filtered.sort(key=sorter, reverse=sort_reverse)
 
@@ -272,56 +345,13 @@ def main():
             if tty_height != -1 and len(filtered) > tty_height - 2:
                 filtered = filtered[:tty_height-2]
 
-            name_width = max(len(i.name) for i in filtered)
-            max_total = max(i.total for i in filtered)
-            max_count = _lax_max(c
-                                 for i in filtered if i.counts
-                                 for n, c in enumerate(i.counts) if n in use_cpus)
-            total_width = max(len(str(max_total)), 5)
-            count_width = max(len(str(max_count)), 5)
-            reserve_comment = min(max(len(i.comment) for i in filtered), tty_width // 3)
-
-            if tty_width != -1:
-                left_width = name_width + 1
-                if show_total:
-                    left_width += total_width + 1
-
-                if details is True:
-                    # If we are forcing the display of details, reserve a third of the width
-                    left_width += reserve_comment
-
-                if left_width > tty_width:
-                    use_cpus = []
-                else:
-                    cpu_room = (tty_width - left_width) // (count_width + 1)
-                    use_cpus = use_cpus[:cpu_room]
-                    left_width += len(use_cpus) * (count_width + 1)
-
-                if details is True:
-                    left_width -= reserve_comment
-
-                comment_width = (tty_width - left_width) - 1
-                if details is False or comment_width < 6:
-                    comment_width = 0
-            else:
-                comment_width = 255
-
-            def format_line(name, total, counts, comment):
-                line = name.rjust(name_width)
-                if show_total:
-                    line += " " + str(total).rjust(total_width)
-                if not just_total:
-                    line += " " + " ".join(str(c).rjust(count_width) for c in counts)
-                line += " " + comment[:comment_width]
-                return line
+            format_line = LineLayout(tracker.cpu_count, display, filtered, tty_width)
 
             print('\x0c')
-            print(format_line("", "TOTAL", [f"CPU{i}" for i in use_cpus], ""))
+            print(format_line(header_line))
 
             for row in filtered:
-                print(format_line(row.name, row.total,
-                                  [row.counts[i] for i in use_cpus if i < len(row.counts)],
-                                  row.comment))
+                print(format_line(row))
 
             next_refresh_time = t + interval
 
@@ -329,8 +359,8 @@ def main():
                 wait = next_refresh_time - time.time()
                 key = unbuffered.get_chr(wait)
 
-                if key in ['q', 'Q', '\x1b']:
-                    # Quit on q, Q or ESC
+                if key in ['q', 'Q']:
+                    # Quit on q or Q
                     running = False
                     break
                 elif key in ['s', 'S']:
@@ -354,9 +384,9 @@ def main():
                         new_filter = input("Enter filter expression:")
                         if new_filter:
                             try:
-                                filter_re = re.compile(new_filter)
-                            except re.error:
-                                flash_message("Bad regular expression")
+                                filter_re = regex_arg(new_filter)
+                            except ArgumentTypeError as e:
+                                flash_message(str(e))
                         else:
                             filter_re = None
                             flash_message("Filter cleared")
@@ -365,34 +395,34 @@ def main():
                     with unbuffered.suspend():
                         new_cpu_list = input("Enter list of CPUs:").strip()
                         if new_cpu_list == '-':
-                            cpus = []
+                            display.cpus = []
                         elif new_cpu_list == '+':
-                            cpus = None
-                        if new_cpu_list:
+                            display.cpus = None
+                        elif new_cpu_list:
                             try:
-                                cpus = _cpu_list_split(new_cpu_list)
-                            except ValueError:
-                                flash_message("Bad CPU list")
+                                display.cpus = cpu_list_arg(new_cpu_list)
+                            except ArgumentTypeError as e:
+                                flash_message(str(e))
                         else:
-                            cpus = [] if just_total else None
+                            display.cpus = [] if args.total is True else None
                 elif key == 't':
                     # Toggle total display
-                    show_total = not show_total
+                    display.total = not display.total
                 elif key == 'd':
                     # Toggle details display
-                    details = (comment_width == 0)
+                    display.details = not format_line.has_details
                 elif key == 'D':
                     # Display details only if there is space
-                    details = None
+                    display.details = None
                 elif key == 'i':
                     # Change the sampling interval
                     with unbuffered.suspend():
                         new_interval = input("Refresh interval (seconds):").strip()
                         if new_interval:
                             try:
-                                interval = float(new_interval.strip())
-                            except ValueError:
-                                flash_message("Interval value must be a number")
+                                interval = positive_float_arg(new_interval.strip())
+                            except ArgumentTypeError as e:
+                                flash_message(str(e))
 
 
 if __name__ == "__main__":
